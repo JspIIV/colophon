@@ -1,0 +1,18 @@
+{
+  "network": "studionet",
+  "contract": "Colophon",
+  "source": "contracts/colophon.py",
+  "address": "0x7D82675E8C8f35ee4cC234BA1520181D67122122",
+  "explorer": "https://explorer-studio.genlayer.com/address/0x7D82675E8C8f35ee4cC234BA1520181D67122122",
+  "frontend": "https://colophon-genlayer.vercel.app",
+  "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
+  "verified_on_chain": {
+    "work_id": "0",
+    "request_id": "0",
+    "stages": ["REVIEW=GRANTED", "CHALLENGE=UNCLEAR", "APPEAL=GRANTED"],
+    "escrow_before": "3000000000000000000",
+    "escrow_after": "0",
+    "owner_balance_before_gen": 10,
+    "owner_balance_after_gen": 13
+  }
+}
