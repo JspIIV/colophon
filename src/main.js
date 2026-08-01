@@ -68,15 +68,20 @@ function busy(msg = 'Waiting for validator consensus on chain…') {
 }
 
 async function action(btn, fn, okMsg) {
-  const host = btn.closest('.wrap, .card') || btn.parentElement;
-  let noteEl = host.querySelector('.note.live');
-  if (!noteEl) {
+  // The note goes immediately after the row holding the button, not at the end
+  // of the panel. Appending it to the panel put it below the list of works,
+  // where a click looked like it had done nothing at all: the feedback existed
+  // but was off screen.
+  const anchor = btn.closest('.row') || btn;
+  let noteEl = anchor.nextElementSibling;
+  if (!noteEl || !noteEl.classList || !noteEl.classList.contains('live')) {
     noteEl = document.createElement('div');
     noteEl.className = 'note live';
-    host.appendChild(noteEl);
+    anchor.insertAdjacentElement('afterend', noteEl);
   }
   noteEl.className = 'note live';
   noteEl.innerHTML = '<span class="spin"></span> &nbsp;Submitting, then waiting for consensus…';
+  noteEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   try {
     const hash = await fn();
     noteEl.className = 'note live ok';
@@ -84,8 +89,27 @@ async function action(btn, fn, okMsg) {
       Validators settle in about a minute. Refresh the view then.`;
   } catch (err) {
     noteEl.className = 'note live err';
-    noteEl.innerHTML = esc(err?.shortMessage || err?.message || String(err));
+    const raw = String(err?.shortMessage || err?.message || err);
+    noteEl.innerHTML = raw === 'Connect a wallet first.'
+      ? 'Connect a wallet first, using the button at the top right. This action sends a transaction, so it has to be signed.'
+      : esc(raw);
   }
+  noteEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+// Rendered at the top of any tab that can send a transaction, so the state is
+// visible before a button is pressed rather than after.
+function walletBanner() {
+  if (currentAccount()) return '';
+  if (typeof window.ethereum === 'undefined') {
+    return `<div class="note err" style="margin-bottom:16px">
+      No browser wallet detected. Reading this page needs nothing, but registering a work,
+      requesting a licence or filing a report all send transactions and need a wallet such as
+      MetaMask, connected to GenLayer Studionet.</div>`;
+  }
+  return `<div class="note" style="margin-bottom:16px">
+    Wallet not connected. Use <strong>Connect wallet</strong> at the top right before
+    sending anything from this page.</div>`;
 }
 
 // ----------------------------------------------------------------- overview
@@ -134,11 +158,12 @@ async function viewWorks() {
   const works = await read('get_recent_works', [50]);
   el('view').innerHTML = `
     <h2>Works</h2>
+    ${walletBanner()}
     <p class="lede">Register something you own and state the licence in plain words. Those words are what
     every later review is judged against, so they are stored on chain exactly as written.</p>
     <div class="grid two">
       <div class="field"><label>Title</label><input id="w-title" placeholder="Inter typeface" /></div>
-      <div class="field"><label>Licence fee, whole units</label><input id="w-fee" placeholder="5" /></div>
+      <div class="field"><label>Licence fee in GEN, enforced exactly on every request</label><input id="w-fee" placeholder="2" /></div>
     </div>
     <div class="field"><label>Description</label>
       <textarea id="w-desc" placeholder="What the work is and how it is distributed."></textarea></div>
@@ -283,6 +308,7 @@ async function viewCases(kind) {
 
   el('view').innerHTML = `
     <h2>${title}</h2>
+    ${walletBanner()}
     <p class="lede">${isReq
       ? 'A request escrows the fee. Validators read the project page and decide whether the described use sits inside the licence. Either side can challenge, and the appeal is final.'
       : 'A report posts a bond. Validators read the cited page and decide whether it really shows a use outside the licence. An unfounded report forfeits its bond to the work owner.'}</p>
