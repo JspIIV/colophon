@@ -1,18 +1,34 @@
 {
+  "name": "Colophon",
+  "contract": "colophon.py",
+  "class": "Colophon",
+  "address": "0x9f13269cb0c2BBb570C88051f2114827e4201117",
   "network": "studionet",
-  "contract": "Colophon",
-  "source": "contracts/colophon.py",
-  "address": "0x7D82675E8C8f35ee4cC234BA1520181D67122122",
-  "explorer": "https://explorer-studio.genlayer.com/address/0x7D82675E8C8f35ee4cC234BA1520181D67122122",
-  "frontend": "https://colophon-genlayer.vercel.app",
-  "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
+  "chain_id": 61999,
+  "rpc": "https://studio.genlayer.com/api",
+  "explorer": "https://explorer-studio.genlayer.com/address/0x9f13269cb0c2BBb570C88051f2114827e4201117",
+  "frontend": "colophon-app",
+  "regression_suite": "tests/colophon_suite.mjs",
+  "consensus_rounds": [
+    "review, challenge and appeal each bind verdict and evidence_supports_claim"
+  ],
+  "lifecycle_rules": [
+    "the licence fee is enforced to the wei against the work's registered fee",
+    "a report bonds that same fee, and an owner cannot report their own work",
+    "each round opens a window in which only the side it went against may act",
+    "settlement is refused inside the window unless the caller is that side",
+    "requests and reports both run REVIEW, CHALLENGE and APPEAL",
+    "UNCLEAR is neutral on both paths: value returns and standing does not move",
+    "payable methods never raise once value is attached, they refund and record"
+  ],
   "verified_on_chain": {
-    "work_id": "0",
-    "request_id": "0",
-    "stages": ["REVIEW=GRANTED", "CHALLENGE=UNCLEAR", "APPEAL=GRANTED"],
-    "escrow_before": "3000000000000000000",
-    "escrow_after": "0",
-    "owner_balance_before_gen": 10,
-    "owner_balance_after_gen": 13
-  }
+    "regression": {"checks": 28, "passed": 28, "failed": 0},
+    "report_stages": ["REVIEW", "CHALLENGE", "APPEAL"],
+    "fee_gen": 2,
+    "escrow_balance_after": "0"
+  },
+  "superseded_deployments": [
+    "0x7D82675E8C8f35ee4cC234BA1520181D67122122",
+    "0x6B412d61fEdb140b8fe25446BE2EDA139539D8F3"
+  ]
 }

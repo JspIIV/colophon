@@ -17,6 +17,16 @@ STAGE_APPEAL = "APPEAL"
 EVIDENCE_CHARS = 20000
 RECENT_CAP = 50
 
+# One GEN. A work's fee is registered in whole GEN and enforced to the wei on
+# every request, so the price a creator published is the price actually paid.
+WEI_PER_GEN = 1000000000000000000
+
+# How long the losing side has to open the next stage before the other side may
+# settle. Without it, whoever the round favoured could finalise immediately and
+# the right to challenge or appeal would exist only on paper.
+CHALLENGE_WINDOW_SECONDS = 180
+APPEAL_WINDOW_SECONDS = 180
+
 STARTING_REPUTATION = 100
 MIN_REPUTATION = 0
 MAX_REPUTATION = 1000
@@ -77,6 +87,14 @@ def _sid(identifier) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _now_epoch() -> int:
+    # Deadlines are computed once and stored as an integer. Nothing recomputes
+    # one from the clock at read time, because two validators would not agree on
+    # that and the window would become a source of disagreement rather than a
+    # rule.
+    return int(datetime.now(timezone.utc).timestamp())
 
 
 def _csv_add(existing: str, value: str) -> str:
@@ -350,22 +368,48 @@ class Colophon(gl.Contract):
         if int(amount) > 0:
             _Recipient(Address(to_address)).emit_transfer(value=amount)
 
+    def _refuse_payable(self, reason: str) -> None:
+        # Raising out of a payable method reverts the state change but NOT the
+        # incoming transfer, so every guard on a payable method is otherwise a
+        # way to strand the caller's money here permanently. Measured on
+        # Studionet: a refused payable call carrying 1 GEN left the contract
+        # 1 GEN heavier and the caller 1 GEN poorer.
+        #
+        # So these methods never raise once value is attached. They return it,
+        # record why, and exit normally.
+        sender = _addr(gl.message.sender_address.as_hex)
+        value = int(gl.message.value)
+        if value > 0:
+            self._pay(sender, u256(value))
+        self._audit("PROTOCOL", "0", "PAYABLE_REFUSED", sender, str(reason)[:200])
+
     # ------------------------------------------------------- licence requests
 
     @gl.public.write.payable
     def request_licence(self, work_id: str, intended_use: str, use_url: str) -> None:
         work_id = _sid(work_id)
-        work = self._load_work(work_id)
+        raw_work = self.works.get(work_id, None)
+        if raw_work is None:
+            return self._refuse_payable(" Work not found: " + str(work_id))
+        work = json.loads(raw_work)
         if work["status"] != "ACTIVE":
-            raise gl.vm.UserError(ERROR_EXPECTED + " Work is not active")
+            return self._refuse_payable(" Work is not active")
 
         requester = _addr(gl.message.sender_address.as_hex)
         if requester == work["owner"]:
-            raise gl.vm.UserError(ERROR_EXPECTED + " A work owner does not need to licence their own work")
+            return self._refuse_payable(" A work owner does not need to licence their own work")
 
-        paid = gl.message.value
-        if int(paid) <= 0:
-            raise gl.vm.UserError(ERROR_EXPECTED + " A licence request must carry the fee")
+        # The fee the creator registered is the fee that gets paid. Accepting
+        # anything above zero made the published price decorative: a requester
+        # could escrow one wei against a work priced at five GEN and, on a
+        # GRANTED verdict, the owner would receive that one wei.
+        paid = int(gl.message.value)
+        required = int(work["fee_units"]) * WEI_PER_GEN
+        if paid != required:
+            return self._refuse_payable(
+                " This work's licence fee is " + str(work["fee_units"])
+                + " GEN (" + str(required) + " wei), received " + str(paid)
+            )
 
         request_id = str(int(self.request_count))
         self.requests[request_id] = json.dumps({
@@ -404,20 +448,43 @@ class Colophon(gl.Contract):
         self.idx_status_requests[old_status] = ",".join(remaining)
         self.idx_status_requests[new_status] = _csv_add(self.idx_status_requests.get(new_status, ""), request_id)
 
+    def _request_challenger(self, request: dict) -> str:
+        # Whoever the current verdict went against is the side with something to
+        # gain from the next round, so they are the one whose window this is.
+        # GRANTED favours the requester, so the owner holds the right. Anything
+        # else favours the owner, so the requester holds it.
+        if str(request["verdict"]) == "GRANTED":
+            return str(request["owner"])
+        return str(request["requester"])
+
+    def _report_challenger(self, report: dict) -> str:
+        # CONFIRMED favours the reporter, so the owner holds the right to open
+        # the next stage. Anything else favours the owner.
+        if str(report["verdict"]) == "CONFIRMED":
+            return str(report["owner"])
+        return str(report["reporter"])
+
     def _settle_request(self, request: dict) -> None:
         if request["settled"]:
             return
         amount = u256(int(request["escrow"]))
-        if request["verdict"] == "GRANTED":
+        verdict = str(request["verdict"])
+        if verdict == "GRANTED":
             self._pay(request["owner"], amount)
             work = self._load_work(request["work_id"])
             work["granted_count"] = int(work["granted_count"]) + 1
             self.works[request["work_id"]] = json.dumps(work)
             self._rep_apply(request["requester"], "licences_granted", 3)
             self._rep_apply(request["owner"], "", 2)
-        else:
+        elif verdict == "REFUSED":
             self._pay(request["requester"], amount)
             self._rep_apply(request["requester"], "licences_refused", -4)
+        else:
+            # UNCLEAR is not a finding against anyone. The arbiter could not
+            # place the described use inside or outside the terms, so no licence
+            # is granted, the fee goes back, and nobody's standing moves. Both
+            # sides settle UNCLEAR this way, requests and reports alike.
+            self._pay(request["requester"], amount)
         request["settled"] = True
 
     @gl.public.write
@@ -450,6 +517,10 @@ class Colophon(gl.Contract):
             "reasoning": result["reasoning"],
         }]
         request["status"] = "REVIEWED"
+        # The side this round went against now has a window in which only they
+        # can act. Without it the favoured side could finalise in the next block
+        # and the right to challenge would exist only on paper.
+        request["settles_after_epoch"] = _now_epoch() + CHALLENGE_WINDOW_SECONDS
         self._reindex_request(request_id, "PENDING_REVIEW", "REVIEWED")
         self.requests[request_id] = json.dumps(request)
         self._audit("REQUEST", request_id, "REVIEWED", "protocol", result["verdict"])
@@ -493,6 +564,7 @@ class Colophon(gl.Contract):
             "reasoning": result["reasoning"],
         }]
         request["status"] = "CHALLENGED"
+        request["settles_after_epoch"] = _now_epoch() + APPEAL_WINDOW_SECONDS
         self._reindex_request(request_id, "REVIEWED", "CHALLENGED")
         self.requests[request_id] = json.dumps(request)
         self._audit("REQUEST", request_id, "CHALLENGED", actor, result["verdict"])
@@ -556,6 +628,17 @@ class Colophon(gl.Contract):
         if actor not in (request["requester"], request["owner"]):
             raise gl.vm.UserError(ERROR_EXPECTED + " Only the requester or the work owner may finalise")
 
+        # Settlement waits for the window to close, so the side the last round
+        # went against has a real opportunity to open the next one. The party
+        # entitled to that opportunity may waive it by finalising early
+        # themselves; nobody else can waive it for them.
+        deadline = int(request.get("settles_after_epoch", 0))
+        if _now_epoch() < deadline and actor != self._request_challenger(request):
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " The other party may still open the next stage, "
+                + str(deadline - _now_epoch()) + " seconds remain"
+            )
+
         old_status = request["status"]
         self._settle_request(request)
         request["status"] = "FINAL_" + str(request["verdict"])
@@ -568,14 +651,27 @@ class Colophon(gl.Contract):
     @gl.public.write.payable
     def report_infringement(self, work_id: str, infringing_url: str, note: str) -> None:
         work_id = _sid(work_id)
-        work = self._load_work(work_id)
+        raw_work = self.works.get(work_id, None)
+        if raw_work is None:
+            return self._refuse_payable(" Work not found: " + str(work_id))
+        work = json.loads(raw_work)
 
         reporter = _addr(gl.message.sender_address.as_hex)
-        bond = gl.message.value
-        if int(bond) <= 0:
-            raise gl.vm.UserError(
-                ERROR_EXPECTED + " A report must carry a bond, which is forfeited to the work owner if unfounded"
+        # The bond is the work's own licence fee, so accusing somebody costs what
+        # licensing the work costs. A free-form bond let a reporter risk a
+        # trivial amount against an owner's time, and made the incentive
+        # different for every report on the same work.
+        bond = int(gl.message.value)
+        required = int(work["fee_units"]) * WEI_PER_GEN
+        if required <= 0:
+            return self._refuse_payable(" This work carries no fee, so no bond can be set for a report")
+        if bond != required:
+            return self._refuse_payable(
+                " A report on this work must bond " + str(work["fee_units"])
+                + " GEN (" + str(required) + " wei), received " + str(bond)
             )
+        if reporter == work["owner"]:
+            return self._refuse_payable(" A work owner does not report infringement of their own work")
 
         report_id = str(int(self.report_count))
         self.reports[report_id] = json.dumps({
@@ -618,18 +714,27 @@ class Colophon(gl.Contract):
         if report["settled"]:
             return
         bond = u256(int(report["bond"]))
-        if report["verdict"] == "CONFIRMED":
+        verdict = str(report["verdict"])
+        if verdict == "CONFIRMED":
             # A reporter who was right gets their bond back and gains standing.
             self._pay(report["reporter"], bond)
             work = self._load_work(report["work_id"])
             work["confirmed_infringements"] = int(work["confirmed_infringements"]) + 1
             self.works[report["work_id"]] = json.dumps(work)
             self._rep_apply(report["reporter"], "reports_confirmed", 5)
-        else:
+        elif verdict == "UNFOUNDED":
             # An unfounded report costs the bond, which goes to the owner whose
             # work was wrongly accused of being infringed.
             self._pay(report["owner"], bond)
             self._rep_apply(report["reporter"], "reports_unfounded", -8)
+        else:
+            # UNCLEAR is not a finding against anyone, and it used to be settled
+            # here as though it were: the bond was forfeited to the owner and the
+            # reporter took the full unfounded penalty. A reporter who raised a
+            # real question the arbiter could not resolve was punished exactly
+            # like one who invented an accusation. The bond now comes back and
+            # standing does not move, matching how a request settles UNCLEAR.
+            self._pay(report["reporter"], bond)
         report["settled"] = True
 
     @gl.public.write
@@ -662,6 +767,7 @@ class Colophon(gl.Contract):
             "reasoning": result["reasoning"],
         }]
         report["status"] = "REVIEWED"
+        report["settles_after_epoch"] = _now_epoch() + CHALLENGE_WINDOW_SECONDS
         self._reindex_report(report_id, "PENDING_REVIEW", "REVIEWED")
         self.reports[report_id] = json.dumps(report)
         self._audit("REPORT", report_id, "REVIEWED", "protocol", result["verdict"])
@@ -704,9 +810,63 @@ class Colophon(gl.Contract):
             "reasoning": result["reasoning"],
         }]
         report["status"] = "CHALLENGED"
+        report["settles_after_epoch"] = _now_epoch() + APPEAL_WINDOW_SECONDS
         self._reindex_report(report_id, "REVIEWED", "CHALLENGED")
         self.reports[report_id] = json.dumps(report)
         self._audit("REPORT", report_id, "CHALLENGED", actor, result["verdict"])
+
+    @gl.public.write
+    def appeal_report(self, report_id: str, argument: str, evidence_url: str) -> None:
+        """The final round on a report, mirroring appeal_request.
+
+        A report used to stop at CHALLENGE while a licence request had a third
+        round, so the two paths did not have the same rights even though the
+        bond and the fee are both settled by the last verdict.
+        """
+        report_id = _sid(report_id)
+        report = self._load_report(report_id)
+        if report["status"] != "CHALLENGED":
+            raise gl.vm.UserError(ERROR_EXPECTED + " Only a challenged report can be appealed")
+
+        actor = _addr(gl.message.sender_address.as_hex)
+        if actor not in (report["reporter"], report["owner"]):
+            raise gl.vm.UserError(ERROR_EXPECTED + " Only the reporter or the work owner may appeal")
+
+        work = self._load_work(report["work_id"])
+        prior = ""
+        for entry in report["history"]:
+            prior += str(entry["stage"]) + " verdict was " + str(entry["verdict"]) + ": " + str(entry["reasoning"]) + "\n"
+
+        result = self._judge(
+            "You are hearing the final appeal on an infringement finding. After this round the "
+            "outcome is settled and the bond moves, so decide on the strongest reading of the "
+            "evidence across all rounds.",
+            work,
+            evidence_url,
+            "Final appeal by " + ("the reporter" if actor == report["reporter"] else "the work owner")
+            + ": " + str(argument),
+            STAGE_APPEAL,
+            prior,
+            ["CONFIRMED", "UNFOUNDED", "UNCLEAR"],
+            REPORT_EVIDENCE_TASK,
+        )
+
+        report["verdict"] = result["verdict"]
+        report["evidence_supports_claim"] = result["evidence_supports_claim"]
+        report["reasoning"] = result["reasoning"]
+        report["stage"] = STAGE_APPEAL
+        report["history"] = report["history"] + [{
+            "stage": STAGE_APPEAL,
+            "by": actor,
+            "verdict": result["verdict"],
+            "evidence_supports_claim": result["evidence_supports_claim"],
+            "reasoning": result["reasoning"],
+        }]
+        self._settle_report(report)
+        report["status"] = "FINAL_" + str(report["verdict"])
+        self._reindex_report(report_id, "CHALLENGED", report["status"])
+        self.reports[report_id] = json.dumps(report)
+        self._audit("REPORT", report_id, "APPEAL_SETTLED", actor, report["verdict"])
 
     @gl.public.write
     def finalise_report(self, report_id: str) -> None:
@@ -718,6 +878,13 @@ class Colophon(gl.Contract):
         actor = _addr(gl.message.sender_address.as_hex)
         if actor not in (report["reporter"], report["owner"]):
             raise gl.vm.UserError(ERROR_EXPECTED + " Only the reporter or the work owner may finalise")
+
+        deadline = int(report.get("settles_after_epoch", 0))
+        if _now_epoch() < deadline and actor != self._report_challenger(report):
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " The other party may still open the next stage, "
+                + str(deadline - _now_epoch()) + " seconds remain"
+            )
 
         old_status = report["status"]
         self._settle_report(report)
@@ -867,6 +1034,42 @@ class Colophon(gl.Contract):
             if raw is not None:
                 out.append(json.loads(raw))
         return json.dumps(out)
+
+    @gl.public.view
+    def get_settlement_window(self, item_kind: str, item_id: str) -> str:
+        """Seconds left before either party may settle, and who may act now.
+
+        The window exists so the side a round went against can open the next
+        stage. Until it closes, only that side may finalise, which is how they
+        waive it.
+        """
+        kind = str(item_kind).strip().upper()
+        item_id = _sid(item_id)
+        if kind == "REQUEST":
+            raw = self.requests.get(item_id, None)
+            if raw is None:
+                return json.dumps({"error": "Licence request not found"})
+            item = json.loads(raw)
+            holder = self._request_challenger(item)
+        elif kind == "REPORT":
+            raw = self.reports.get(item_id, None)
+            if raw is None:
+                return json.dumps({"error": "Report not found"})
+            item = json.loads(raw)
+            holder = self._report_challenger(item)
+        else:
+            return json.dumps({"error": "item_kind must be REQUEST or REPORT"})
+
+        deadline = int(item.get("settles_after_epoch", 0))
+        remaining = deadline - _now_epoch()
+        return json.dumps({
+            "item_kind": kind,
+            "item_id": item_id,
+            "status": item["status"],
+            "seconds_remaining": max(0, remaining),
+            "open_to_next_stage": holder,
+            "anyone_may_settle": remaining <= 0,
+        })
 
     @gl.public.view
     def get_rubric(self) -> str:
