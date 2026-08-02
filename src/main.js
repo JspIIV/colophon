@@ -313,7 +313,7 @@ function caseCard(kind, c) {
         ${pending ? `<button class="act" data-do="review">Run review</button>` : ''}
         ${(reviewed || challenged) ? `<button class="ghost" data-do="finalise">Finalise and settle</button>` : ''}
         ${reviewed ? `<button class="ghost" data-do="challenge">Challenge</button>` : ''}
-        ${(isReq && challenged) ? `<button class="ghost" data-do="appeal">Appeal</button>` : ''}
+        ${challenged ? `<button class="ghost" data-do="appeal">Appeal</button>` : ''}
       </div>
       <div class="hidden-form" id="form-${kind}-${esc(c.id)}"></div>
     </div>`;
@@ -344,7 +344,7 @@ function attachCaseHandlers(kind, container) {
     el(`send-${id}`).onclick = (ev) => {
       const fn = what === 'challenge'
         ? (isReq ? 'challenge_request' : 'challenge_report')
-        : 'appeal_request';
+        : (isReq ? 'appeal_request' : 'appeal_report');
       action(ev.target, () => {
         const { [`arg-${id}`]: argument } = required([[`arg-${id}`, 'Your argument']]);
         const url = httpUrl(`ev-${id}`, 'Evidence URL');
