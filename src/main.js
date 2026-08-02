@@ -97,6 +97,43 @@ async function action(btn, fn, okMsg) {
   noteEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
+// Checked before anything is signed. An empty form used to sail straight into a
+// transaction, which either wasted a signature on a refusal or wrote a campaign
+// with no brand, no rules and nothing to judge against.
+class FormError extends Error {}
+
+function required(fields) {
+  const missing = [];
+  const out = {};
+  for (const [id, label] of fields) {
+    const raw = (el(id)?.value ?? '').trim();
+    if (!raw) missing.push(label);
+    out[id] = raw;
+  }
+  if (missing.length) {
+    throw new FormError(missing.length === 1
+      ? `${missing[0]} is required.`
+      : `These are required: ${missing.join(', ')}.`);
+  }
+  return out;
+}
+
+function positiveNumber(id, label) {
+  const raw = (el(id)?.value ?? '').trim();
+  const n = Number(raw);
+  if (!raw || !isFinite(n) || n <= 0) throw new FormError(`${label} must be a number greater than zero.`);
+  return raw;
+}
+
+function httpUrl(id, label) {
+  const raw = (el(id)?.value ?? '').trim();
+  if (!raw) throw new FormError(`${label} is required.`);
+  if (!/^https?:\/\/\S+\.\S+/i.test(raw)) {
+    throw new FormError(`${label} must be a full URL starting with http, since validators have to fetch it.`);
+  }
+  return raw;
+}
+
 // Rendered at the top of any tab that can send a transaction, so the state is
 // visible before a button is pressed rather than after.
 function walletBanner() {
@@ -173,9 +210,18 @@ async function viewWorks() {
     <h3>Registered</h3>
     <div id="w-list"></div>`;
 
-  el('w-go').onclick = (e) => action(e.target, () => write('register_work', [
-    el('w-title').value, el('w-desc').value, el('w-terms').value, el('w-fee').value || '0',
-  ]), 'Work submitted.');
+  el('w-go').onclick = (e) => action(e.target, () => {
+    const f = required([
+      ['w-title', 'Title'],
+      ['w-desc', 'Description'],
+      ['w-terms', 'Licence terms'],
+    ]);
+    if (f['w-terms'].length < 20) {
+      throw new FormError('The licence terms are what every review is judged against, so they need to state something.');
+    }
+    const fee = positiveNumber('w-fee', 'Licence fee');
+    return write('register_work', [f['w-title'], f['w-desc'], f['w-terms'], fee]);
+  }, 'Work submitted.');
 
   el('w-list').innerHTML = works.length ? works.map((w) => `
     <div class="card">
@@ -212,15 +258,23 @@ async function viewWorks() {
     const rp = e.target.closest('[data-rp]');
     if (rq) {
       const id = rq.dataset.rq;
-      const gen = BigInt(Math.round(parseFloat(el(`rq-fee-${id}`).value || '0') * 1000)) * (GEN / 1000n);
-      action(rq, () => write('request_licence', [id, el(`rq-use-${id}`).value, el(`rq-url-${id}`).value], gen),
-        'Licence request submitted with the fee escrowed.');
+      action(rq, () => {
+        const { [`rq-use-${id}`]: use } = required([[`rq-use-${id}`, 'Intended use']]);
+        const url = httpUrl(`rq-url-${id}`, 'Project URL');
+        const fee = positiveNumber(`rq-fee-${id}`, 'Fee');
+        const gen = BigInt(Math.round(parseFloat(fee) * 1000)) * (GEN / 1000n);
+        return write('request_licence', [id, use, url], gen);
+      }, 'Licence request submitted with the fee escrowed.');
     }
     if (rp) {
       const id = rp.dataset.rp;
-      const gen = BigInt(Math.round(parseFloat(el(`rp-bond-${id}`).value || '0') * 1000)) * (GEN / 1000n);
-      action(rp, () => write('report_infringement', [id, el(`rp-url-${id}`).value, el(`rp-note-${id}`).value], gen),
-        'Report filed with the bond posted.');
+      action(rp, () => {
+        const url = httpUrl(`rp-url-${id}`, 'Allegedly infringing URL');
+        const { [`rp-note-${id}`]: note } = required([[`rp-note-${id}`, 'Note']]);
+        const bond = positiveNumber(`rp-bond-${id}`, 'Bond');
+        const gen = BigInt(Math.round(parseFloat(bond) * 1000)) * (GEN / 1000n);
+        return write('report_infringement', [id, url, note], gen);
+      }, 'Report filed with the bond posted.');
     }
   };
 }
@@ -291,7 +345,11 @@ function attachCaseHandlers(kind, container) {
       const fn = what === 'challenge'
         ? (isReq ? 'challenge_request' : 'challenge_report')
         : 'appeal_request';
-      action(ev.target, () => write(fn, [id, el(`arg-${id}`).value, el(`ev-${id}`).value]), 'Submitted for a fresh round.');
+      action(ev.target, () => {
+        const { [`arg-${id}`]: argument } = required([[`arg-${id}`, 'Your argument']]);
+        const url = httpUrl(`ev-${id}`, 'Evidence URL');
+        return write(fn, [id, argument, url]);
+      }, 'Submitted for a fresh round.');
     };
   };
 }
