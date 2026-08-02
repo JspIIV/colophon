@@ -439,8 +439,13 @@ async function render() {
     if (tab === 'reports') return await viewCases('report');
     if (tab === 'party') return await viewParty();
   } catch (err) {
-    el('view').innerHTML = `<h2>Something went wrong</h2>
-      <div class="note err">${esc(err?.shortMessage || err?.message || String(err))}</div>`;
+    // Reads already retry a busy network before giving up, so anything landing
+    // here is worth showing plainly, with a way to try again that does not
+    // require reloading the page.
+    el('view').innerHTML = `<h2>Could not load this view</h2>
+      <div class="note err">${esc(err?.message || err?.shortMessage || String(err))}</div>
+      <div class="row" style="margin-top:14px"><button class="act" id="retry">Try again</button></div>`;
+    el('retry').onclick = () => render();
   }
 }
 
