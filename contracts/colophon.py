@@ -533,8 +533,18 @@ class Colophon(gl.Contract):
             raise gl.vm.UserError(ERROR_EXPECTED + " Only a reviewed request can be challenged")
 
         actor = _addr(gl.message.sender_address.as_hex)
-        if actor not in (request["requester"], request["owner"]):
-            raise gl.vm.UserError(ERROR_EXPECTED + " Only the requester or the work owner may challenge")
+        # The right belongs to one side, not to both. The party the current
+        # verdict already favours has nothing to contest, and letting them open
+        # the round anyway would let them burn the stage the other side is
+        # waiting on and then finalise. _request_challenger names the holder,
+        # and settlement defers to the same helper, so one rule governs both.
+        holder = self._request_challenger(request)
+        if actor != holder:
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " The current verdict favours you, so the challenge belongs to the other party"
+                if actor in (request["requester"], request["owner"])
+                else ERROR_EXPECTED + " Only the requester or the work owner may challenge"
+            )
 
         work = self._load_work(request["work_id"])
         prior = "REVIEW verdict was " + str(request["verdict"]) + ": " + str(request["reasoning"])
@@ -577,8 +587,13 @@ class Colophon(gl.Contract):
             raise gl.vm.UserError(ERROR_EXPECTED + " Only a challenged request can be appealed")
 
         actor = _addr(gl.message.sender_address.as_hex)
-        if actor not in (request["requester"], request["owner"]):
-            raise gl.vm.UserError(ERROR_EXPECTED + " Only the requester or the work owner may appeal")
+        holder = self._request_challenger(request)
+        if actor != holder:
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " The challenge verdict favours you, so the appeal belongs to the other party"
+                if actor in (request["requester"], request["owner"])
+                else ERROR_EXPECTED + " Only the requester or the work owner may appeal"
+            )
 
         work = self._load_work(request["work_id"])
         prior = ""
@@ -780,8 +795,13 @@ class Colophon(gl.Contract):
             raise gl.vm.UserError(ERROR_EXPECTED + " Only a reviewed report can be challenged")
 
         actor = _addr(gl.message.sender_address.as_hex)
-        if actor not in (report["reporter"], report["owner"]):
-            raise gl.vm.UserError(ERROR_EXPECTED + " Only the reporter or the work owner may challenge")
+        holder = self._report_challenger(report)
+        if actor != holder:
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " The current verdict favours you, so the challenge belongs to the other party"
+                if actor in (report["reporter"], report["owner"])
+                else ERROR_EXPECTED + " Only the reporter or the work owner may challenge"
+            )
 
         work = self._load_work(report["work_id"])
         prior = "REVIEW verdict was " + str(report["verdict"]) + ": " + str(report["reasoning"])
@@ -829,8 +849,13 @@ class Colophon(gl.Contract):
             raise gl.vm.UserError(ERROR_EXPECTED + " Only a challenged report can be appealed")
 
         actor = _addr(gl.message.sender_address.as_hex)
-        if actor not in (report["reporter"], report["owner"]):
-            raise gl.vm.UserError(ERROR_EXPECTED + " Only the reporter or the work owner may appeal")
+        holder = self._report_challenger(report)
+        if actor != holder:
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " The challenge verdict favours you, so the appeal belongs to the other party"
+                if actor in (report["reporter"], report["owner"])
+                else ERROR_EXPECTED + " Only the reporter or the work owner may appeal"
+            )
 
         work = self._load_work(report["work_id"])
         prior = ""
@@ -1039,9 +1064,12 @@ class Colophon(gl.Contract):
     def get_settlement_window(self, item_kind: str, item_id: str) -> str:
         """Seconds left before either party may settle, and who may act now.
 
-        The window exists so the side a round went against can open the next
-        stage. Until it closes, only that side may finalise, which is how they
-        waive it.
+        `open_to_next_stage` is the side the current verdict went against, and
+        the right is theirs alone: only they may challenge or appeal, and until
+        the window closes only they may finalise, which is how they waive it.
+        The side a round favours has nothing to contest and cannot spend the
+        stage on the other's behalf. A frontend should gate its controls on
+        this address.
         """
         kind = str(item_kind).strip().upper()
         item_id = _sid(item_id)

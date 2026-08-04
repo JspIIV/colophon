@@ -5,8 +5,8 @@ A licence registry where infringement is decided, not asserted.
 A creator registers a work together with the licence they publish. Anyone can request a licence against an escrowed fee, or report a use they believe falls outside it against a bond. Every decision is made by GenLayer validators that fetch the cited page themselves and read the licence as written, and every decision can be challenged and then appealed.
 
 * **Live app:** https://colophon-genlayer.vercel.app
-* **Contract:** [`0x9f13269cb0c2BBb570C88051f2114827e4201117`](https://explorer-studio.genlayer.com/address/0x9f13269cb0c2BBb570C88051f2114827e4201117) on GenLayer Studionet
-* **Regression suite:** [`tests/colophon_suite.mjs`](tests/colophon_suite.mjs), 28 checks
+* **Contract:** [`0x518d08D87b8D4319d25a6a0aBDaFF557fB81c7c5`](https://explorer-studio.genlayer.com/address/0x518d08D87b8D4319d25a6a0aBDaFF557fB81c7c5) on GenLayer Studionet
+* **Regression suite:** [`tests/colophon_suite.mjs`](tests/colophon_suite.mjs), 47 checks
 * **Contract source:** [`contracts/colophon.py`](contracts/colophon.py)
 
 ## Why this needs an intelligent contract
@@ -22,12 +22,14 @@ Both a licence request and an infringement report run through the same three sta
 | Stage | What happens |
 |---|---|
 | `REVIEW` | Validators fetch the cited page and rule on it for the first time |
-| `CHALLENGE` | Either party submits new evidence and a fresh round runs over it |
+| `CHALLENGE` | The side the review went against submits new evidence and a fresh round runs over it |
 | `APPEAL` | Final round, after which the outcome settles and escrowed value moves |
 
 Both paths really do run all three. Reports used to stop at `CHALLENGE` while requests had a third round, so `appeal_report` was added and the two are now symmetrical.
 
-**The next stage is a right, not a courtesy.** Each round opens a window of `CHALLENGE_WINDOW_SECONDS` in which only the side the round went against may act. Until it closes, the favoured side cannot settle, so it cannot end the case before the other party has had its turn. The side holding the window can waive it by finalising early itself; nobody can waive it on their behalf. `get_settlement_window` reports the seconds left and who currently holds it.
+**The next stage belongs to one side, and it is a right rather than a courtesy.** Whoever the current verdict went against holds it: `GRANTED` favours the requester so the owner holds it, `CONFIRMED` favours the reporter so the owner holds it, anything else is the other way round. That holder is the only party who may challenge or appeal, and while the window of `CHALLENGE_WINDOW_SECONDS` is open they are also the only party who may finalise, which is how they waive it. `get_settlement_window` names them in `open_to_next_stage`, and the app gates its controls on that address.
+
+The reason all four transitions enforce it, rather than only settlement: a party the verdict already favours has nothing to contest, so the only use they have for the stage is to spend it. Filing a token challenge would burn the round the other side was waiting on and leave them holding a verdict they never got to answer, then the favoured side could finalise once the window closed. The right and the settlement lock have to name the same holder or the lock protects nothing, so both read it from the same helper.
 
 **Money.** A licence request escrows exactly the fee the creator registered, enforced to the wei, so the published price is the price paid. It goes to the owner on `GRANTED` and back to the requester on `REFUSED`. A report bonds that same fee, so accusing somebody costs what licensing the work costs and every report on a work carries the same risk. The bond is returned on `CONFIRMED` and forfeited to the owner on `UNFOUNDED`.
 
@@ -72,7 +74,7 @@ That run was on an earlier deployment. The contract linked above then went throu
 
 ## What review changed, and the tests that hold it
 
-A reviewer asked for four things: enforceable challenge and appeal rights, the missing report appeal, an enforced licence fee, and consistent behaviour across report parties, bond incentives and `UNCLEAR` versus `UNFOUNDED`. All four were fair, and all four are now covered by [`tests/colophon_suite.mjs`](tests/colophon_suite.mjs), which asserts them on chain rather than in a mock.
+A reviewer asked for enforceable challenge and appeal rights, the missing report appeal, an enforced licence fee, consistent behaviour across report parties, bond incentives and `UNCLEAR` versus `UNFOUNDED`, and then, once settlement was locked, for the same rule on the four transitions themselves. Every one of them was fair, and every one is now covered by [`tests/colophon_suite.mjs`](tests/colophon_suite.mjs), which asserts them on chain rather than in a mock.
 
 | Was | Is |
 |---|---|
@@ -81,13 +83,14 @@ A reviewer asked for four things: enforceable challenge and appeal rights, the m
 | Reports stopped at `CHALLENGE` | `appeal_report` exists, and a report ran `REVIEW`, `CHALLENGE` and `APPEAL` on chain with a three entry history |
 | Any bond above zero, and owners could report themselves | The bond is the work's own fee, and an owner reporting their own work is refused |
 | An `UNCLEAR` report forfeited the bond and applied the unfounded penalty | `UNCLEAR` returns the bond, pays the owner nothing, and leaves standing alone |
+| Either party could challenge or appeal, including the one the verdict favoured | All four transitions enforce the holder the contract itself names, and a favoured party is refused |
 
 The suite also carries two checks that exist because of a runtime behaviour worth knowing about. **Raising out of a payable method reverts the state change but not the incoming transfer.** Measured on Studionet: a refused payable call carrying 1 GEN left the contract 1 GEN heavier and the caller 1 GEN poorer. Every guard on a payable method was therefore a way to strand somebody's money, so `request_licence` and `report_infringement` now return the value and record why instead of raising. A refusal is consequently a successful transaction that creates nothing, which is what the tests assert; asserting on an error result would be asserting on the bug.
 
 The last check is the invariant: the contract's real balance read from `eth_getBalance` must equal the escrow and bonds of everything still unsettled.
 
 ```
-28 passed, 0 failed
+47 passed, 0 failed
 ```
 
 ## Running it

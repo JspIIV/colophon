@@ -8,6 +8,8 @@
 //   4. an UNCLEAR report forfeiting the bond as though it were UNFOUNDED
 //   5. a refused payable call keeping the caller's value
 //   6. value stranded in the contract with nothing owing it
+//   7. the party a verdict favoured consuming the challenge or the appeal the
+//      other side was waiting on, then finalising against them
 //
 // Run against a freshly deployed contract:
 //   cd placard-app && COLOPHON_ADDR=0x... node ../scripts/colophon_suite.mjs
@@ -18,8 +20,8 @@
 // returns the money, and that is what is asserted. Asserting on an ERROR result
 // would be asserting on the bug.
 import { Wallet } from 'file:///C:/Users/ysfym/AppData/Roaming/npm/node_modules/genlayer/node_modules/ethers/lib.esm/index.js';
-import { createClient, createAccount } from './node_modules/genlayer-js/dist/index.js';
-import { studionet } from './node_modules/genlayer-js/dist/chains/index.js';
+import { createClient, createAccount } from '../node_modules/genlayer-js/dist/index.js';
+import { studionet } from '../node_modules/genlayer-js/dist/chains/index.js';
 import fs from 'fs';
 
 const ADDR = process.env.COLOPHON_ADDR;
@@ -40,7 +42,7 @@ const reader = createClient({ chain: studionet });
 // refusal by the contract is a result and must reach the assertion.
 function isTransport(e) {
   const s = String(e && (e.details || e.message) || e);
-  return /fetch failed|ECONNRESET|socket|timeout|Unexpected token '<'|503|502|429|Rate limit|Server busy|execution slots|-32006|-32029/i.test(s);
+  return /fetch failed|ECONNRESET|socket|timeout|Unexpected token '<'|503|502|429|Rate limit|Server busy|execution slots|backpressure|not currently accepting transactions|-32006|-32029|-32603/i.test(s);
 }
 async function retry(label, fn, attempts = 5) {
   let last;
@@ -168,8 +170,15 @@ if ((await read('get_report', ['0'])).status === 'PENDING_REVIEW') {
 console.log(`  ..    report verdict ${(await read('get_report', ['0'])).verdict}`);
 
 console.log('\n--- case 4: a report runs the same three stages a request does ---');
+// Which side may open each stage depends on the verdict that round produced,
+// so the test asks the contract instead of naming a party. Hardcoding the
+// owner here passed only while either party could take any stage.
+const holderFor = async (kind, id) => {
+  const h = String((await read('get_settlement_window', [kind, id])).open_to_next_stage).toLowerCase();
+  return h === OWNER_ADDR ? owner : other;
+};
 if ((await read('get_report', ['0'])).status === 'REVIEWED') {
-  await mustAccept('challenge the report', owner, 'challenge_report',
+  await mustAccept('challenge the report', await holderFor('REPORT', '0'), 'challenge_report',
     ['0', 'The cited page is an article about the licence, not a redistribution of the work', PROJECT]);
 }
 const challenged = await read('get_report', ['0']);
@@ -177,7 +186,8 @@ check('the report reached CHALLENGED', challenged.status === 'CHALLENGED', `got 
 
 const beforeAppeal = { c: await chainBalance(ADDR), o: await chainBalance(OWNER_ADDR), r: await chainBalance(OTHER_ADDR) };
 if (challenged.status === 'CHALLENGED') {
-  await mustAccept('appeal the report, the stage that did not exist before', other, 'appeal_report',
+  await mustAccept('appeal the report, the stage that did not exist before',
+    await holderFor('REPORT', '0'), 'appeal_report',
     ['0', 'Asking the arbiter to look again at whether the work is actually redistributed there', ALLEGED]);
 }
 const appealed = await read('get_report', ['0']);
@@ -206,6 +216,61 @@ if (appealed.verdict === 'UNFOUNDED') {
       Number((await read('get_reputation', [OTHER_ADDR])).reports_unfounded) === 0, '');
   }
 }
+
+console.log('\n--- case 5: the favoured side cannot spend a stage that is not theirs ---');
+// Four transitions, and before this every one of them accepted either party.
+// The party a round favours had nothing to argue and everything to gain from
+// burning the round the other side was waiting on, then finalising. The right
+// belongs to the side the verdict went against, and the contract names that
+// side itself through get_settlement_window, so the test asks the contract who
+// it is rather than assuming.
+async function stageRights(kind, id, label) {
+  const item = () => read(kind === 'REQUEST' ? 'get_request' : 'get_report', [id]);
+  const clientFor = (addr) => (String(addr).toLowerCase() === OWNER_ADDR ? owner : other);
+
+  let w = await read('get_settlement_window', [kind, id]);
+  let holder = String(w.open_to_next_stage).toLowerCase();
+  let favoured = holder === OWNER_ADDR ? OTHER_ADDR : OWNER_ADDR;
+  console.log(`  ..    ${label} verdict ${(await item()).verdict}, stage belongs to ${holder}`);
+
+  const chFn = kind === 'REQUEST' ? 'challenge_request' : 'challenge_report';
+  await mustRefuse(`${label}: the favoured side cannot challenge`,
+    clientFor(favoured), chFn, [id, 'I like this verdict and would like another round anyway', PROJECT]);
+  check(`${label}: the refused challenge left the status at REVIEWED`,
+    (await item()).status === 'REVIEWED', `got ${(await item()).status}`);
+  await mustAccept(`${label}: the side it went against may challenge`,
+    clientFor(holder), chFn, [id, 'The cited page does not show what the last round assumed it showed', ALLEGED]);
+
+  // The challenge produces a new verdict, so the right may now sit with the
+  // other party. Ask again rather than carrying the old answer forward.
+  w = await read('get_settlement_window', [kind, id]);
+  holder = String(w.open_to_next_stage).toLowerCase();
+  favoured = holder === OWNER_ADDR ? OTHER_ADDR : OWNER_ADDR;
+  console.log(`  ..    ${label} now ${(await item()).verdict}, appeal belongs to ${holder}`);
+
+  const apFn = kind === 'REQUEST' ? 'appeal_request' : 'appeal_report';
+  await mustRefuse(`${label}: the favoured side cannot appeal`,
+    clientFor(favoured), apFn, [id, 'Another round, please', PROJECT]);
+  check(`${label}: the refused appeal left the status at CHALLENGED`,
+    (await item()).status === 'CHALLENGED', `got ${(await item()).status}`);
+  await mustAccept(`${label}: the side it went against may appeal`,
+    clientFor(holder), apFn, [id, 'The strongest reading of the evidence across all rounds', ALLEGED]);
+  check(`${label}: the appeal settled it`, (await item()).settled === true, '');
+}
+
+st = await read('get_stats');
+const reqId = String(Number(st.licence_requests));
+await mustAccept('open a second request for the rights test', other, 'request_licence',
+  ['0', 'Embed the webfont in a commercial product site', PROJECT], FEE_GEN * GEN);
+await mustAccept('review it', other, 'review_request', [reqId]);
+await stageRights('REQUEST', reqId, 'request');
+
+st = await read('get_stats');
+const repId = String(Number(st.infringement_reports));
+await mustAccept('open a second report for the rights test', other, 'report_infringement',
+  ['0', ALLEGED, 'This page redistributes the typeface as a standalone download'], FEE_GEN * GEN);
+await mustAccept('review it', other, 'review_report', [repId]);
+await stageRights('REPORT', repId, 'report');
 
 console.log('\n--- case 6: no value is stranded ---');
 const stats = await read('get_stats');

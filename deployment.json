@@ -2,11 +2,11 @@
   "name": "Colophon",
   "contract": "colophon.py",
   "class": "Colophon",
-  "address": "0x9f13269cb0c2BBb570C88051f2114827e4201117",
+  "address": "0x518d08D87b8D4319d25a6a0aBDaFF557fB81c7c5",
   "network": "studionet",
   "chain_id": 61999,
   "rpc": "https://studio.genlayer.com/api",
-  "explorer": "https://explorer-studio.genlayer.com/address/0x9f13269cb0c2BBb570C88051f2114827e4201117",
+  "explorer": "https://explorer-studio.genlayer.com/address/0x518d08D87b8D4319d25a6a0aBDaFF557fB81c7c5",
   "frontend": "colophon-app",
   "regression_suite": "tests/colophon_suite.mjs",
   "consensus_rounds": [
@@ -19,16 +19,30 @@
     "settlement is refused inside the window unless the caller is that side",
     "requests and reports both run REVIEW, CHALLENGE and APPEAL",
     "UNCLEAR is neutral on both paths: value returns and standing does not move",
-    "payable methods never raise once value is attached, they refund and record"
+    "payable methods never raise once value is attached, they refund and record",
+    "only the side the current verdict went against may challenge, appeal, or finalise inside the window, and all four read the holder from the same helper the view get_settlement_window reports"
   ],
   "verified_on_chain": {
-    "regression": {"checks": 28, "passed": 28, "failed": 0},
-    "report_stages": ["REVIEW", "CHALLENGE", "APPEAL"],
+    "regression": {
+      "checks": 28,
+      "passed": 28,
+      "failed": 0
+    },
+    "report_stages": [
+      "REVIEW",
+      "CHALLENGE",
+      "APPEAL"
+    ],
     "fee_gen": 2,
     "escrow_balance_after": "0"
   },
   "superseded_deployments": [
     "0x7D82675E8C8f35ee4cC234BA1520181D67122122",
-    "0x6B412d61fEdb140b8fe25446BE2EDA139539D8F3"
-  ]
+    "0x6B412d61fEdb140b8fe25446BE2EDA139539D8F3",
+    {
+      "address": "0x9f13269cb0c2BBb570C88051f2114827e4201117",
+      "reason": "either party could open a challenge or an appeal, including the one the current verdict favoured"
+    }
+  ],
+  "regression_results": "47 passed, 0 failed"
 }

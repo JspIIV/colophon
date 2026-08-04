@@ -285,6 +285,15 @@ function historyStages(h) {
   return (h || []).map((x) => `<span class="stage">${esc(x.stage)} → ${esc(x.verdict)}</span>`).join('');
 }
 
+// Who holds the right to open the next stage. This mirrors _request_challenger
+// and _report_challenger in the contract: the side the current verdict went
+// against. The contract is what enforces it; this only decides whether showing
+// the control would be an invitation to a transaction that must revert.
+function nextStageHolder(isReq, c) {
+  if (isReq) return String(c.verdict) === 'GRANTED' ? c.owner : c.requester;
+  return String(c.verdict) === 'CONFIRMED' ? c.owner : c.reporter;
+}
+
 function caseCard(kind, c) {
   const isReq = kind === 'request';
   const url = isReq ? c.use_url : c.infringing_url;
@@ -293,6 +302,8 @@ function caseCard(kind, c) {
   const pending = c.status === 'PENDING_REVIEW';
   const reviewed = c.status === 'REVIEWED';
   const challenged = c.status === 'CHALLENGED';
+  const holder = nextStageHolder(isReq, c);
+  const mine = !!currentAccount() && String(holder).toLowerCase() === currentAccount().toLowerCase();
   return `
     <div class="card" data-id="${esc(c.id)}">
       <div class="head">
@@ -312,9 +323,12 @@ function caseCard(kind, c) {
       <div class="row" style="margin-top:12px">
         ${pending ? `<button class="act" data-do="review">Run review</button>` : ''}
         ${(reviewed || challenged) ? `<button class="ghost" data-do="finalise">Finalise and settle</button>` : ''}
-        ${reviewed ? `<button class="ghost" data-do="challenge">Challenge</button>` : ''}
-        ${challenged ? `<button class="ghost" data-do="appeal">Appeal</button>` : ''}
+        ${reviewed && mine ? `<button class="ghost" data-do="challenge">Challenge</button>` : ''}
+        ${challenged && mine ? `<button class="ghost" data-do="appeal">Appeal</button>` : ''}
       </div>
+      ${(reviewed || challenged) && !mine ? `<div class="note">The verdict stands against
+        <span class="mono addr">${esc(shortAddr(holder))}</span>, so the next stage is theirs to open.
+        The side a round favours cannot spend it.</div>` : ''}
       <div class="hidden-form" id="form-${kind}-${esc(c.id)}"></div>
     </div>`;
 }
